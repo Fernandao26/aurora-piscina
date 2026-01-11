@@ -62,6 +62,15 @@ def inicializar_banco():
             preco_por_unidade REAL
         )
     """)
+    # Tabela extra para registro de KM conforme seu último formulário
+    executar_db("""
+        CREATE TABLE IF NOT EXISTS registro_km (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            data_registro TEXT,
+            km_inicial REAL,
+            preco_gasolina REAL
+        )
+    """)
 
 inicializar_banco()
 
@@ -71,6 +80,7 @@ def comando_voz():
     dados = request.get_json()
     comando = dados.get('comando', '').lower().replace(",", ".")
     hoje = time.strftime('%Y-%m-%d')
+    respostas = []
     
     # 1. Iniciar Dia (KM + Agenda)
     if any(word in comando for word in ["começar", "início", "iniciar"]):
@@ -87,7 +97,7 @@ def comando_voz():
                 WHERE a.data_visita = ?
             """, (hoje,), fetch=True)
             
-            msg_agenda = " Seus clientes de hoje são: " + ", ".join([r[0] for r in agenda_hoje]) if agenda_hoje else " Sem agendamentos hoje."
+            msg_agenda = " Clientes de hoje: " + ", ".join([r[0] for r in agenda_hoje]) if agenda_hoje else " Sem agendamentos."
             return jsonify({"resposta": f"Dia iniciado com {km} KM.{msg_agenda}"})
 
     # 2. Finalizar Dia (Cálculo Combustível)
@@ -106,9 +116,29 @@ def comando_voz():
                 custo_comb = (dist / KM_POR_LITRO) * p_gas
                 executar_db("INSERT INTO historico_financeiro (data_servico, valor_cobrado, custo_material, lucro_liquido, status_pagamento) VALUES (?, 0, ?, ?, ?)", 
                             (hoje, custo_comb, -custo_comb, f"Viagem: {dist}km"))
-                return jsonify({"resposta": f"Dia encerrado. Você rodou {dist}km. Gasto de combustível: R${custo_comb:.2f}."})
+                return jsonify({"resposta": f"Dia encerrado. Rodou {dist}km. Gasto gasolina: R${custo_comb:.2f}."})
 
-    # 3. Recebimento
+    # 3. Gerenciar Estoque por Voz (Entrada e Saída)
+    produtos_estoque = executar_db("SELECT id, nome_produto, preco_por_unidade FROM estoque", fetch=True)
+    for p_id, p_nome, p_preco in produtos_estoque:
+        nome_p = p_nome.lower()
+        if nome_p in comando:
+            match = re.search(rf"(\d+\.?\d*)\s*(?:de|do|dos|da|das)?\s*{nome_p}", comando)
+            if match:
+                qtd = float(match.group(1))
+                # Se falar "adicionar", "entrou" ou "estoque", ele SOMA
+                if any(word in comando for word in ["adicionar", "entrou", "estoque", "comprar"]):
+                    executar_db("UPDATE estoque SET quantidade_estoque = quantidade_estoque + ? WHERE id = ?", (qtd, p_id))
+                    return jsonify({"resposta": f"Entrada de {qtd} de {p_nome} registrada."})
+                # Se não, ele entende como USO (subtrai)
+                else:
+                    custo_item = qtd * p_preco
+                    executar_db("UPDATE estoque SET quantidade_estoque = quantidade_estoque - ? WHERE id = ?", (qtd, p_id))
+                    executar_db("INSERT INTO historico_financeiro (data_servico, valor_cobrado, custo_material, lucro_liquido, status_pagamento) VALUES (?, 0, ?, ?, ?)", 
+                                (hoje, custo_item, -custo_item, f"Uso: {qtd} {p_nome}"))
+                    return jsonify({"resposta": f"Gasto de {qtd} de {p_nome} abatido do lucro."})
+
+    # 4. Recebimento
     if "recebi" in comando:
         val = re.search(r"recebi\s*(\d+\.?\d*)", comando)
         if val:
@@ -145,10 +175,12 @@ def painel_controle():
             elif 'nome_prod' in request.form:
                 n, q, p = request.form.get('nome_prod').strip().title(), float(request.form.get('qtd_compra').replace(',', '.')), float(request.form.get('preco_total').replace(',', '.'))
                 executar_db("INSERT INTO estoque (nome_produto, quantidade_estoque, preco_por_unidade) VALUES (?, ?, ?) ON CONFLICT(nome_produto) DO UPDATE SET quantidade_estoque = quantidade_estoque + ?, preco_por_unidade = ?", (n, q, p/q, q, p/q))
+
             elif 'km_inicial' in request.form:
                 km = float(request.form.get('km_inicial'))
                 pg = float(request.form.get('preco_gas').replace(',', '.'))
                 executar_db("INSERT INTO registro_km (data_registro, km_inicial, preco_gasolina) VALUES (?, ?, ?)", (hoje, km, pg))
+
             return redirect(url_for('painel_controle'))
         except Exception as e: return f"Erro: {e}"
 
@@ -158,7 +190,7 @@ def painel_controle():
     produtos = executar_db("SELECT id, nome_produto, quantidade_estoque FROM estoque", fetch=True)
     lista_c = executar_db("SELECT id, nome FROM clientes", fetch=True)
     
-    # Preparar link do WhatsApp
+    # Preparar link do WhatsApp para o irmão
     fat_mes = resumo_mes[0][0] or 0
     lucro_mes = resumo_mes[0][1] or 0
     msg_whats = f"Relatório Aurora - Mês {mes_atual}:%0AFaturamento: R${fat_mes:.2f}%0ALucro Líquido: R${lucro_mes:.2f}"
@@ -177,7 +209,7 @@ def painel_controle():
             h3 { margin-top: 0; color: #333; font-size: 18px; border-left: 4px solid #007aff; padding-left: 10px; }
             input, select { width: 100%; padding: 12px; margin: 6px 0; border: 1px solid #ddd; border-radius: 10px; font-size: 16px; box-sizing: border-box; }
             .btn { width: 100%; padding: 14px; border: none; border-radius: 10px; font-weight: bold; color: white; cursor: pointer; text-decoration: none; display: block; text-align: center; margin-top: 10px; }
-            .btn-green { background: #34c759; } .btn-blue { background: #007aff; } .btn-orange { background: #ff9500; }
+            .btn-green { background: #34c759; } .btn-blue { background: #007aff; } .btn-orange { background: #ff9500; } .btn-purple { background: #5856d6; }
         </style>
     </head>
     <body>
@@ -234,11 +266,13 @@ def painel_controle():
                 <button type="submit" class="btn btn-blue">Atualizar Estoque</button>
             </form>
         </div>
+
         <div class="card">
             <h3>⛽ Saída / KM</h3>
             <form method="POST">
-                <input type="number" name="km_inicial" placeholder="KM Inicial" required><input type="number" step="0.01" name="preco_gas" placeholder="Preço Gasolina" required>
-                <button type="submit" class="btn btn-purple">Registrar</button>
+                <input type="number" name="km_inicial" placeholder="KM Inicial" required>
+                <input type="number" step="0.01" name="preco_gas" placeholder="Preço Gasolina" required>
+                <button type="submit" class="btn btn-purple">Registrar KM</button>
             </form>
         </div>
     </body>
