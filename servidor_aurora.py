@@ -26,16 +26,28 @@ def painel_controle():
     
     if request.method == 'POST':
         try:
-            if 'valor' in request.form:
+            # CADASTRO MANUAL DE CLIENTE
+            if 'nome_cliente' in request.form:
+                nome = request.form.get('nome_cliente')
+                endereco = request.form.get('endereco_cliente')
+                executar_db("INSERT INTO clientes (nome, endereco) VALUES (?, ?)", (nome.title(), endereco))
+            
+            # CADASTRO DE SERVIÇO
+            elif 'valor' in request.form:
                 valor = float(request.form.get('valor').replace(',', '.'))
                 cloro = float(request.form.get('cloro').replace(',', '.'))
-                custo_un = executar_db("SELECT preco_por_unidade FROM estoque WHERE nome_produto LIKE '%Cloro%'", fetch=True)[0][0]
+                # Busca custo do cloro no estoque
+                estoque_data = executar_db("SELECT preco_por_unidade FROM estoque WHERE nome_produto LIKE '%Cloro%'", fetch=True)
+                custo_un = estoque_data[0][0] if estoque_data else 0
+                
                 custo_total = cloro * custo_un
                 lucro = valor - custo_total
+                
                 executar_db("INSERT INTO historico_financeiro (cliente_id, data_servico, valor_cobrado, custo_material, lucro_liquido, status_pagamento) VALUES (1, ?, ?, ?, ?, 'Pendente')", 
                             (hoje, valor, custo_total, lucro))
                 executar_db("UPDATE estoque SET quantidade_estoque = quantidade_estoque - ? WHERE nome_produto LIKE '%Cloro%'", (cloro,))
             
+            # CADASTRO DE GASOLINA / ROTA
             elif 'preco_gasolina' in request.form:
                 km_ini = float(request.form.get('km_inicial'))
                 p_gas = float(request.form.get('preco_gasolina').replace(',', '.'))
@@ -58,23 +70,35 @@ def painel_controle():
     <head>
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>A.U.R.O.R.A - Painel</title>
+        <title>A.U.R.O.R.A - Gestão</title>
         <style>
-            body { font-family: -apple-system, sans-serif; background: #f0f2f5; padding: 15px; margin: 0; }
-            .resumo-card { background: #007aff; color: white; padding: 20px; border-radius: 0 0 20px 20px; text-align: center; margin-bottom: 20px; box-shadow: 0 4px 15px rgba(0,122,255,0.3); }
-            .card { background: white; padding: 15px; border-radius: 15px; box-shadow: 0 4px 10px rgba(0,0,0,0.1); margin-bottom: 20px; }
-            input { width: 100%; padding: 12px; margin: 8px 0; border: 1px solid #ddd; border-radius: 8px; box-sizing: border-box; font-size: 16px; }
-            .btn { background: #007aff; color: white; width: 100%; padding: 12px; border: none; border-radius: 8px; font-weight: bold; margin-top: 5px; cursor: pointer; }
-            .item-lista { background: white; padding: 12px; border-radius: 10px; margin-bottom: 8px; border-left: 5px solid #34c759; display: flex; justify-content: space-between; align-items: center; }
+            body { font-family: -apple-system, sans-serif; background: #f0f2f5; padding: 0; margin: 0; padding-bottom: 30px; }
+            .resumo-card { background: #007aff; color: white; padding: 25px 20px; border-radius: 0 0 25px 25px; text-align: center; margin-bottom: 20px; box-shadow: 0 4px 15px rgba(0,122,255,0.3); }
+            .card { background: white; padding: 15px; border-radius: 15px; box-shadow: 0 4px 10px rgba(0,0,0,0.05); margin: 0 15px 20px 15px; }
+            input { width: 100%; padding: 12px; margin: 8px 0; border: 1px solid #ddd; border-radius: 10px; box-sizing: border-box; font-size: 16px; }
+            .btn { color: white; width: 100%; padding: 14px; border: none; border-radius: 10px; font-weight: bold; margin-top: 5px; cursor: pointer; font-size: 16px; }
+            .btn-blue { background: #007aff; }
+            .btn-purple { background: #5856d6; }
+            .btn-orange { background: #ff9500; }
+            .item-lista { background: white; padding: 12px; border-radius: 12px; margin: 0 15px 10px 15px; border-left: 5px solid #34c759; display: flex; justify-content: space-between; align-items: center; box-shadow: 0 2px 5px rgba(0,0,0,0.05); }
             .btn-del { color: #ff3b30; text-decoration: none; font-size: 13px; font-weight: bold; }
-            h2, h3 { color: #1c1c1e; margin-left: 5px; }
+            h2 { color: #1c1c1e; margin: 20px 20px 10px 20px; font-size: 18px; }
         </style>
     </head>
     <body>
         <div class="resumo-card">
             <p style="margin:0; opacity: 0.8; font-size: 14px;">Lucro Líquido Total</p>
-            <h1 style="margin:5px 0; font-size: 32px;">R$ {{lucro_total}}</h1>
-            <small>Faturamento: R$ {{faturamento_total}}</small>
+            <h1 style="margin:5px 0; font-size: 36px;">R$ {{lucro_total}}</h1>
+            <p style="margin:0; font-size: 14px; opacity: 0.9;">Faturamento: R$ {{faturamento_total}}</p>
+        </div>
+
+        <h2>👤 Novo Cliente</h2>
+        <div class="card">
+            <form method="POST">
+                <input type="text" name="nome_cliente" placeholder="Nome do Cliente" required>
+                <input type="text" name="endereco_cliente" placeholder="Endereço" required>
+                <button type="submit" class="btn btn-orange">Cadastrar Cliente</button>
+            </form>
         </div>
 
         <h2>⛽ Iniciar Rota</h2>
@@ -82,27 +106,27 @@ def painel_controle():
             <form method="POST">
                 <input type="number" name="km_inicial" placeholder="KM Inicial" required>
                 <input type="number" step="0.01" name="preco_gasolina" placeholder="Preço do Litro (R$)" required>
-                <button type="submit" class="btn" style="background: #5856d6;">Abrir Dia</button>
+                <button type="submit" class="btn btn-purple">Registrar KM e Gás</button>
             </form>
         </div>
 
-        <h2>🚀 Novo Serviço</h2>
+        <h2>🚀 Lançar Serviço</h2>
         <div class="card">
             <form method="POST">
-                <input type="number" step="0.01" name="valor" placeholder="Valor (R$)" required>
-                <input type="number" step="0.1" name="cloro" placeholder="Cloro (kg)" required>
-                <button type="submit" class="btn">Salvar Serviço</button>
+                <input type="number" step="0.01" name="valor" placeholder="Valor Cobrado (R$)" required>
+                <input type="number" step="0.1" name="cloro" placeholder="Cloro Gasto (kg)" required>
+                <button type="submit" class="btn btn-blue">Salvar no Financeiro</button>
             </form>
         </div>
 
-        <h3>📊 Histórico (Últimos 10)</h3>
+        <h2>📊 Últimos Registros</h2>
         {% for s in servicos %}
         <div class="item-lista">
             <div>
                 <small style="color: #8e8e93;">{{s[1]}}</small><br>
-                <strong>R${{s[2]}}</strong> <span style="color: #34c759; font-size: 12px;">(Lucro R${{s[3]}})</span>
+                <strong>R${{s[2]}}</strong> <span style="color: #34c759; font-size: 13px;">(+R${{s[3]}})</span>
             </div>
-            <a href="/excluir/{{s[0]}}" class="btn-del" onclick="return confirm('Apagar?')">Excluir</a>
+            <a href="/excluir/{{s[0]}}" class="btn-del" onclick="return confirm('Apagar registro?')">Excluir</a>
         </div>
         {% endfor %}
     </body>
@@ -123,36 +147,37 @@ def processar_comando():
     comando = dados.get('comando', '').lower()
     hoje = time.strftime('%Y-%m-%d')
     
-    # KM Inicial
-    if "quilometragem" in comando or "rota" in comando:
+    # KM Inicial por voz
+    if "quilometragem" in comando or "km" in comando:
         nums = re.findall(r"(\d+\.?\d*)", comando.replace(",", "."))
         if len(nums) >= 2:
             km, gas = float(nums[0]), float(nums[1])
             executar_db("INSERT INTO registro_km (data_registro, km_inicial, preco_gasolina) VALUES (?, ?, ?)", (hoje, km, gas))
-            return jsonify({"resposta": f"Rota iniciada! KM {km} e Gasolina a R${gas}."})
+            return jsonify({"resposta": f"Entendido! KM {km} e gasolina a {gas} reais. Boa rota!"})
 
-    # Consulta de Lucro da Semana (NOVA LÓGICA)
-    elif "lucro" in comando or "resumo" in comando or "ganhei" in comando:
+    # Consulta de Lucro da Semana
+    elif any(p in comando for p in ["lucro", "resumo", "ganhei", "faturamento"]):
         query = "SELECT SUM(lucro_liquido) FROM historico_financeiro WHERE data_servico >= date('now', '-7 days')"
         resultado = executar_db(query, fetch=True)
         total_semana = resultado[0][0] if resultado[0][0] else 0
-        return jsonify({"resposta": f"Na última semana, o seu lucro líquido foi de {total_semana:.2f} reais. Bom trabalho!"})
+        return jsonify({"resposta": f"Nos últimos sete dias, seu lucro limpo foi de {total_semana:.2f} reais."})
 
-    # Finalizar Serviço
+    # Finalizar Serviço por voz
     elif any(p in comando for p in ["concluí", "terminei", "finalizar", "serviço"]):
         nums = re.findall(r"(\d+\.?\d*)", comando.replace(",", "."))
         if len(nums) >= 2:
             valor, cloro = float(nums[0]), float(nums[1])
-            custo_un = executar_db("SELECT preco_por_unidade FROM estoque WHERE nome_produto LIKE '%Cloro%'", fetch=True)[0][0]
+            estoque_data = executar_db("SELECT preco_por_unidade FROM estoque WHERE nome_produto LIKE '%Cloro%'", fetch=True)
+            custo_un = estoque_data[0][0] if estoque_data else 0
             custo_total = cloro * custo_un
             lucro = valor - custo_total
             executar_db("INSERT INTO historico_financeiro (cliente_id, data_servico, valor_cobrado, custo_material, lucro_liquido, status_pagamento) VALUES (1, ?, ?, ?, ?, 'Pendente')", (hoje, valor, custo_total, lucro))
             executar_db("UPDATE estoque SET quantidade_estoque = quantidade_estoque - ? WHERE nome_produto LIKE '%Cloro%'", (cloro,))
-            return jsonify({"resposta": f"Serviço de {valor} reais registrado. Lucro líquido de {lucro:.2f} reais."})
+            return jsonify({"resposta": f"Serviço de {valor} reais salvo. Lucro de {lucro:.2f} reais."})
 
-    return jsonify({"resposta": "Comando recebido pela Aurora."})
+    return jsonify({"resposta": "Aurora pronta. O que deseja?"})
 
-# --- 4. WHATSAPP ---
+# --- 4. WHATSAPP / API EXTERNA ---
 @app.route('/whatsapp', methods=['POST'])
 def whatsapp_cadastro():
     dados = request.json
