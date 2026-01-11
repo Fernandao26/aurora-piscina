@@ -10,7 +10,8 @@ app = Flask(__name__)
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.path.join(BASE_DIR, "piscina.db")
 
-# --- CONFIGURAÇÃO PADRÃO DO VEÍCULO ---
+# --- CONFIGURAÇÕES DO IRMÃO ---
+NUMERO_IRMAO = "5512996204209"
 KM_POR_LITRO = 10.0
 PRECO_GASOLINA_PADRAO = 5.80
 
@@ -25,7 +26,6 @@ def executar_db(query, params=(), fetch=False):
 
 # --- FUNÇÃO PARA CRIAR TABELAS SE NÃO EXISTIREM ---
 def inicializar_banco():
-    # Tabela de Clientes
     executar_db("""
         CREATE TABLE IF NOT EXISTS clientes (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -35,7 +35,6 @@ def inicializar_banco():
             valor_mensal REAL
         )
     """)
-    # Tabela de Agenda
     executar_db("""
         CREATE TABLE IF NOT EXISTS agenda (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -45,7 +44,6 @@ def inicializar_banco():
             FOREIGN KEY(cliente_id) REFERENCES clientes(id)
         )
     """)
-    # Tabela de Histórico Financeiro
     executar_db("""
         CREATE TABLE IF NOT EXISTS historico_financeiro (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -56,7 +54,6 @@ def inicializar_banco():
             status_pagamento TEXT
         )
     """)
-    # Tabela de Estoque
     executar_db("""
         CREATE TABLE IF NOT EXISTS estoque (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -66,7 +63,6 @@ def inicializar_banco():
         )
     """)
 
-# Inicializa as tabelas ao rodar o script
 inicializar_banco()
 
 # --- ROTA PARA COMANDO DE VOZ (SIRI) ---
@@ -75,9 +71,8 @@ def comando_voz():
     dados = request.get_json()
     comando = dados.get('comando', '').lower().replace(",", ".")
     hoje = time.strftime('%Y-%m-%d')
-    respostas = []
     
-    # 1. Lógica de Início (KM + Agenda)
+    # 1. Iniciar Dia (KM + Agenda)
     if any(word in comando for word in ["começar", "início", "iniciar"]):
         nums = re.findall(r"(\d+\.?\d*)", comando)
         if nums:
@@ -93,9 +88,27 @@ def comando_voz():
             """, (hoje,), fetch=True)
             
             msg_agenda = " Seus clientes de hoje são: " + ", ".join([r[0] for r in agenda_hoje]) if agenda_hoje else " Sem agendamentos hoje."
-            return jsonify({"resposta": f"Dia iniciado. KM: {km}.{msg_agenda}"})
+            return jsonify({"resposta": f"Dia iniciado com {km} KM.{msg_agenda}"})
 
-    # 2. Recebimento Simples
+    # 2. Finalizar Dia (Cálculo Combustível)
+    elif any(word in comando for word in ["finalizar", "encerrar"]):
+        nums = re.findall(r"(\d+\.?\d*)", comando)
+        if nums:
+            km_f = float(nums[0])
+            res = executar_db("SELECT status_pagamento FROM historico_financeiro WHERE data_servico = ? AND status_pagamento LIKE 'KM_START:%' ORDER BY id DESC LIMIT 1", (hoje,), fetch=True)
+            if res:
+                info_start = res[0][0]
+                km_i = float(re.search(r"KM_START:(\d+\.?\d*)", info_start).group(1))
+                try: p_gas = float(re.search(r"GAS:(\d+\.?\d*)", info_start).group(1))
+                except: p_gas = PRECO_GASOLINA_PADRAO
+                
+                dist = km_f - km_i
+                custo_comb = (dist / KM_POR_LITRO) * p_gas
+                executar_db("INSERT INTO historico_financeiro (data_servico, valor_cobrado, custo_material, lucro_liquido, status_pagamento) VALUES (?, 0, ?, ?, ?)", 
+                            (hoje, custo_comb, -custo_comb, f"Viagem: {dist}km"))
+                return jsonify({"resposta": f"Dia encerrado. Você rodou {dist}km. Gasto de combustível: R${custo_comb:.2f}."})
+
+    # 3. Recebimento
     if "recebi" in comando:
         val = re.search(r"recebi\s*(\d+\.?\d*)", comando)
         if val:
@@ -103,29 +116,23 @@ def comando_voz():
             executar_db("INSERT INTO historico_financeiro (data_servico, valor_cobrado, lucro_liquido, status_pagamento) VALUES (?, ?, ?, 'Pago')", (hoje, v, v))
             return jsonify({"resposta": f"Registrado recebimento de R${v:.2f}"})
 
-    return jsonify({"resposta": "Aurora não entendeu o comando de voz."})
+    return jsonify({"resposta": "Aurora não entendeu o comando."})
 
 # --- PAINEL DE CONTROLE (WEB) ---
 @app.route('/painel', methods=['GET', 'POST'])
 def painel_controle():
     hoje = time.strftime('%Y-%m-%d')
+    mes_atual = time.strftime('%Y-%m')
+    
     if request.method == 'POST':
         try:
-            # Novo Cliente
             if 'cadastrar_cliente' in request.form:
-                nome = request.form.get('nome_cliente')
-                whatsapp = request.form.get('whatsapp')
-                endereco = request.form.get('endereco')
-                valor_m = float(request.form.get('valor_mensal').replace(',', '.'))
-                executar_db("INSERT INTO clientes (nome, whatsapp, endereco, valor_mensal) VALUES (?, ?, ?, ?)", (nome, whatsapp, endereco, valor_m))
+                executar_db("INSERT INTO clientes (nome, whatsapp, endereco, valor_mensal) VALUES (?, ?, ?, ?)", 
+                            (request.form.get('nome_cliente'), request.form.get('whatsapp'), request.form.get('endereco'), float(request.form.get('valor_mensal').replace(',', '.'))))
 
-            # Novo Agendamento
             elif 'agendar_servico' in request.form:
-                c_id = request.form.get('cliente_id')
-                data_v = request.form.get('data_visita')
-                executar_db("INSERT INTO agenda (cliente_id, data_visita, status) VALUES (?, ?, 'Agendado')", (c_id, data_v))
+                executar_db("INSERT INTO agenda (cliente_id, data_visita, status) VALUES (?, ?, 'Agendado')", (request.form.get('cliente_id'), request.form.get('data_visita')))
 
-            # Registrar Serviço Manual
             elif 'valor_servico' in request.form:
                 valor = float(request.form.get('valor_servico').replace(',', '.'))
                 p_id = request.form.get('produto_id')
@@ -135,27 +142,30 @@ def painel_controle():
                 executar_db("INSERT INTO historico_financeiro (data_servico, valor_cobrado, custo_material, lucro_liquido, status_pagamento) VALUES (?, ?, ?, ?, 'Pago')", (hoje, valor, custo_t, valor - custo_t))
                 executar_db("UPDATE estoque SET quantidade_estoque = quantidade_estoque - ? WHERE id = ?", (qtd, p_id))
 
-            # Estoque
             elif 'nome_prod' in request.form:
-                n = request.form.get('nome_prod').strip().title()
-                q = float(request.form.get('qtd_compra').replace(',', '.'))
-                p = float(request.form.get('preco_total').replace(',', '.'))
+                n, q, p = request.form.get('nome_prod').strip().title(), float(request.form.get('qtd_compra').replace(',', '.')), float(request.form.get('preco_total').replace(',', '.'))
                 executar_db("INSERT INTO estoque (nome_produto, quantidade_estoque, preco_por_unidade) VALUES (?, ?, ?) ON CONFLICT(nome_produto) DO UPDATE SET quantidade_estoque = quantidade_estoque + ?, preco_por_unidade = ?", (n, q, p/q, q, p/q))
 
             return redirect(url_for('painel_controle'))
-        except Exception as e: return f"Erro no Processamento: {e}"
+        except Exception as e: return f"Erro: {e}"
 
     # Dados para carregar a página
     resumo = executar_db("SELECT SUM(valor_cobrado), SUM(lucro_liquido) FROM historico_financeiro", fetch=True)
+    resumo_mes = executar_db("SELECT SUM(valor_cobrado), SUM(lucro_liquido) FROM historico_financeiro WHERE data_servico LIKE ?", (f"{mes_atual}%",), fetch=True)
     produtos = executar_db("SELECT id, nome_produto, quantidade_estoque FROM estoque", fetch=True)
     lista_c = executar_db("SELECT id, nome FROM clientes", fetch=True)
     
+    # Preparar link do WhatsApp
+    fat_mes = resumo_mes[0][0] or 0
+    lucro_mes = resumo_mes[0][1] or 0
+    msg_whats = f"Relatório Aurora - Mês {mes_atual}:%0AFaturamento: R${fat_mes:.2f}%0ALucro Líquido: R${lucro_mes:.2f}"
+    link_whats = f"https://wa.me/{NUMERO_IRMAO}?text={msg_whats}"
+
     html = """
     <!DOCTYPE html>
     <html lang="pt-br">
     <head>
-        <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
         <title>A.U.R.O.R.A - Painel Profissional</title>
         <style>
             body { font-family: -apple-system, sans-serif; background: #f0f2f5; margin: 0; padding-bottom: 40px; }
@@ -163,7 +173,7 @@ def painel_controle():
             .card { background: white; padding: 20px; border-radius: 18px; margin: 15px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
             h3 { margin-top: 0; color: #333; font-size: 18px; border-left: 4px solid #007aff; padding-left: 10px; }
             input, select { width: 100%; padding: 12px; margin: 6px 0; border: 1px solid #ddd; border-radius: 10px; font-size: 16px; box-sizing: border-box; }
-            .btn { width: 100%; padding: 14px; border: none; border-radius: 10px; font-weight: bold; color: white; cursor: pointer; transition: 0.3s; }
+            .btn { width: 100%; padding: 14px; border: none; border-radius: 10px; font-weight: bold; color: white; cursor: pointer; text-decoration: none; display: block; text-align: center; margin-top: 10px; }
             .btn-green { background: #34c759; } .btn-blue { background: #007aff; } .btn-orange { background: #ff9500; }
         </style>
     </head>
@@ -171,7 +181,7 @@ def painel_controle():
         <div class="header">
             <small>LUCRO LÍQUIDO ACUMULADO</small>
             <h1 style="font-size: 38px; margin: 5px 0;">R$ {{ "%.2f"|format(resumo[0][1] or 0) }}</h1>
-            <p style="margin:0; opacity:0.8;">Faturamento: R$ {{ "%.2f"|format(resumo[0][0] or 0) }}</p>
+            <a href="{{ link_whats }}" target="_blank" class="btn btn-green" style="width: auto; display: inline-block; padding: 10px 20px;">📲 Relatório para WhatsApp</a>
         </div>
 
         <div class="card">
@@ -213,7 +223,7 @@ def painel_controle():
         </div>
 
         <div class="card">
-            <h3>📦 Comprar Material</h3>
+            <h3>📦 Comprar Material (Estoque)</h3>
             <form method="POST">
                 <input type="text" name="nome_prod" placeholder="Nome do Produto" required>
                 <input type="number" step="0.1" name="qtd_compra" placeholder="Qtd Comprada" required>
@@ -224,7 +234,7 @@ def painel_controle():
     </body>
     </html>
     """
-    return render_template_string(html, resumo=resumo, produtos=produtos, lista_c=lista_c)
+    return render_template_string(html, resumo=resumo, produtos=produtos, lista_c=lista_c, link_whats=link_whats)
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=int(os.environ.get("PORT", 5000)))
