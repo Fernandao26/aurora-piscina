@@ -10,9 +10,9 @@ app = Flask(__name__)
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.path.join(BASE_DIR, "piscina.db")
 
-# --- CONFIGURAÇÃO DO VEÍCULO ---
+# --- CONFIGURAÇÃO PADRÃO DO VEÍCULO ---
 KM_POR_LITRO = 10.0
-PRECO_GASOLINA = 5.80
+PRECO_GASOLINA_PADRAO = 5.80
 
 def executar_db(query, params=(), fetch=False):
     conn = sqlite3.connect(DB_PATH, timeout=10)
@@ -23,13 +23,14 @@ def executar_db(query, params=(), fetch=False):
     conn.close()
     return res
 
+# --- ROTA PARA COMANDO DE VOZ (SIRI) ---
 @app.route('/aurora', methods=['POST'])
 def comando_voz():
     dados = request.get_json()
     comando = dados.get('comando', '').lower()
     hoje = time.strftime('%Y-%m-%d')
     
-    # Lógica de KM
+    # 1. Lógica de KM (Voz)
     if "começar" in comando or "início" in comando:
         nums = re.findall(r"(\d+)", comando)
         if nums:
@@ -45,12 +46,11 @@ def comando_voz():
             if res:
                 km_i = float(res[0][0].split(":")[-1])
                 dist = km_f - km_i
-                custo = (dist / KM_POR_LITRO) * PRECO_GASOLINA
+                custo = (dist / KM_POR_LITRO) * PRECO_GASOLINA_PADRAO
                 executar_db("INSERT INTO historico_financeiro (data_servico, valor_cobrado, custo_material, lucro_liquido, status_pagamento) VALUES (?, 0, ?, ?, ?)", (hoje, custo, -custo, f"Viagem: {dist}km"))
                 return jsonify({"resposta": f"Rodou {dist}km. Gasto de R${custo:.2f}."})
 
-    # Lógica de Recebimento e Uso (Simplificada)
-    estoque = executar_db("SELECT id, nome_produto, preco_por_unidade FROM estoque ORDER BY id", fetch=True)
+    # 2. Lógica de Recebimento (Voz)
     if "recebi" in comando:
         nums = re.findall(r"(\d+[\.,]?\d*)", comando.replace(",", "."))
         if nums:
@@ -60,106 +60,115 @@ def comando_voz():
             
     return jsonify({"resposta": "Aurora não entendeu."})
 
-# --- PAINEL DE CONTROLE MANUAL ---
+# --- PAINEL DE CONTROLE (WEB) ---
 @app.route('/painel', methods=['GET', 'POST'])
 def painel_controle():
     hoje = time.strftime('%Y-%m-%d')
     if request.method == 'POST':
         try:
-            # 1. Registrar Serviço Manual
+            # 1. LANÇAR SERVIÇO MANUAL
             if 'valor_servico' in request.form:
                 valor = float(request.form.get('valor_servico').replace(',', '.'))
-                p_id = request.form.get('produto_id')
-                qtd = float(request.form.get('qtd_usada').replace(',', '.'))
-                res = executar_db("SELECT preco_por_unidade FROM estoque WHERE id = ?", (p_id,), fetch=True)
-                custo_un = res[0][0] if res else 0
-                executar_db("INSERT INTO historico_financeiro (data_servico, valor_cobrado, custo_material, lucro_liquido, status_pagamento) VALUES (?, ?, ?, ?, 'Pago')", 
-                            (hoje, valor, (qtd*custo_un), (valor-(qtd*custo_un))))
-                executar_db("UPDATE estoque SET quantidade_estoque = quantidade_estoque - ? WHERE id = ?", (qtd, p_id))
+                produto_id = request.form.get('produto_id')
+                qtd_usada = float(request.form.get('qtd_usada').replace(',', '.'))
+                
+                prod_data = executar_db("SELECT preco_por_unidade FROM estoque WHERE id = ?", (produto_id,), fetch=True)
+                custo_un = prod_data[0][0] if prod_data else 0
+                custo_total = qtd_usada * custo_un
+                lucro = valor - custo_total
+                
+                executar_db("INSERT INTO historico_financeiro (cliente_id, data_servico, valor_cobrado, custo_material, lucro_liquido, status_pagamento) VALUES (1, ?, ?, ?, ?, 'Pago')", 
+                            (hoje, valor, custo_total, lucro))
+                executar_db("UPDATE estoque SET quantidade_estoque = quantidade_estoque - ? WHERE id = ?", (qtd_usada, produto_id))
 
-            # 2. Registrar Gasto Manual (Gasolina/Outros)
-            elif 'valor_gasto' in request.form:
-                valor_g = float(request.form.get('valor_gasto').replace(',', '.'))
-                desc = request.form.get('desc_gasto')
-                executar_db("INSERT INTO historico_financeiro (data_servico, valor_cobrado, custo_material, lucro_liquido, status_pagamento) VALUES (?, 0, ?, ?, ?)", 
-                            (hoje, valor_g, -valor_g, f"Gasto: {desc}"))
+            # 2. GASTO COM FERRAMENTAS
+            elif 'valor_ferramenta' in request.form:
+                valor_f = float(request.form.get('valor_ferramenta').replace(',', '.'))
+                executar_db("INSERT INTO historico_financeiro (data_servico, valor_cobrado, custo_material, lucro_liquido, status_pagamento) VALUES (?, 0, ?, ?, 'Ferramenta')", 
+                            (hoje, valor_f, -valor_f))
 
-            # 3. Cadastrar/Repor Estoque
+            # 3. ATUALIZAR ESTOQUE
             elif 'nome_prod' in request.form:
                 nome = request.form.get('nome_prod').title()
-                qtd = float(request.form.get('qtd_compra'))
-                preco = float(request.form.get('preco_total'))
+                qtd = float(request.form.get('qtd_compra').replace(',', '.'))
+                preco = float(request.form.get('preco_total').replace(',', '.'))
+                custo_un = preco / qtd
                 executar_db("INSERT INTO estoque (nome_produto, quantidade_estoque, preco_por_unidade) VALUES (?, ?, ?) ON CONFLICT(nome_produto) DO UPDATE SET quantidade_estoque = quantidade_estoque + ?, preco_por_unidade = ?", 
-                            (nome, qtd, (preco/qtd), qtd, (preco/qtd)))
+                            (nome, qtd, custo_un, qtd, custo_un))
+
+            # 4. REGISTRO DE KM MANUAL
+            elif 'km_inicial' in request.form:
+                km = float(request.form.get('km_inicial'))
+                p_gas = float(request.form.get('preco_gas').replace(',', '.'))
+                executar_db("INSERT INTO registro_km (data_registro, km_inicial, preco_gasolina) VALUES (?, ?, ?)", (hoje, km, p_gas))
 
             return redirect(url_for('painel_controle'))
         except Exception as e: return f"Erro: {e}"
 
+    # BUSCA DE DADOS
     resumo = executar_db("SELECT SUM(valor_cobrado), SUM(lucro_liquido) FROM historico_financeiro", fetch=True)
-    produtos = executar_db("SELECT id, nome_produto, quantidade_estoque FROM estoque ORDER BY id", fetch=True)
-    
+    produtos = executar_db("SELECT id, nome_produto, quantidade_estoque FROM estoque", fetch=True)
+    faturamento = resumo[0][0] if resumo[0][0] else 0
+    lucro_real = resumo[0][1] if resumo[0][1] else 0
+
     html = """
     <!DOCTYPE html>
     <html lang="pt-br">
     <head>
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>Aurora - Painel</title>
+        <title>A.U.R.O.R.A - Gestão</title>
         <style>
             body { font-family: -apple-system, sans-serif; background: #f4f7f9; margin: 0; padding-bottom: 50px; }
-            .header { background: #007aff; color: white; padding: 40px 20px; text-align: center; border-radius: 0 0 25px 25px; }
-            .card { background: white; padding: 20px; border-radius: 15px; margin: 15px; box-shadow: 0 4px 10px rgba(0,0,0,0.05); }
-            input, select { width: 100%; padding: 12px; margin: 8px 0; border: 1px solid #ddd; border-radius: 10px; box-sizing: border-box; }
-            .btn { width: 100%; padding: 15px; border: none; border-radius: 10px; color: white; font-weight: bold; cursor: pointer; margin-top: 10px; }
-            .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+            .header { background: #007aff; color: white; padding: 35px 20px; text-align: center; border-radius: 0 0 30px 30px; }
+            .card { background: white; padding: 20px; border-radius: 20px; margin: 15px; box-shadow: 0 4px 12px rgba(0,0,0,0.08); }
+            input, select { width: 100%; padding: 14px; margin: 8px 0; border: 1px solid #ddd; border-radius: 12px; font-size: 16px; box-sizing: border-box; }
+            .btn { width: 100%; padding: 16px; border: none; border-radius: 12px; font-weight: bold; color: white; cursor: pointer; }
+            .btn-green { background: #34c759; } .btn-blue { background: #007aff; } .btn-red { background: #ff3b30; } .btn-purple { background: #5856d6; }
         </style>
     </head>
     <body>
         <div class="header">
-            <small>LUCRO ACUMULADO</small>
-            <h1>R$ {{ "%.2f"|format(lucro) }}</h1>
+            <small>LUCRO LÍQUIDO REAL</small>
+            <h1 style="font-size: 42px; margin: 10px 0;">R$ {{ "%.2f"|format(lucro_real) }}</h1>
+            <p style="margin:0; opacity:0.8;">Faturamento: R$ {{ "%.2f"|format(faturamento) }}</p>
         </div>
 
         <div class="card">
-            <h3>🚀 Novo Serviço (Manual)</h3>
+            <h3>🚀 Registrar Serviço</h3>
             <form method="POST">
-                <input type="number" step="0.01" name="valor_servico" placeholder="Valor Recebido (R$)" required>
-                <select name="produto_id">
-                    {% for p in produtos %}<option value="{{p[0]}}">{{loop.index}}º - {{p[1]}}</option>{% endfor %}
+                <input type="number" step="0.01" name="valor_servico" placeholder="Valor Cobrado (R$)" required>
+                <select name="produto_id" required>
+                    <option value="" disabled selected>Selecione o Produto</option>
+                    {% for p in produtos %}<option value="{{p[0]}}">{{p[1]}} (Estoque: {{p[2]}})</option>{% endfor %}
                 </select>
-                <input type="number" step="0.01" name="qtd_usada" placeholder="Qtd de produto usada" required>
-                <button type="submit" class="btn" style="background: #34c759;">Salvar Serviço</button>
+                <input type="number" step="0.1" name="qtd_usada" placeholder="Qtd Gasta" required>
+                <button type="submit" class="btn btn-green">Salvar Trabalho</button>
             </form>
         </div>
 
         <div class="card">
-            <h3>💸 Registrar Gasto (Extra)</h3>
-            <form method="POST">
-                <input type="text" name="desc_gasto" placeholder="Ex: Gasolina, Almoço, Peça" required>
-                <input type="number" step="0.01" name="valor_gasto" placeholder="Valor (R$)" required>
-                <button type="submit" class="btn" style="background: #ff3b30;">Registrar Gasto</button>
-            </form>
-        </div>
-
-        <div class="card">
-            <h3>📦 Gerenciar Estoque</h3>
+            <h3>📦 Estoque / Compras</h3>
             <form method="POST">
                 <input type="text" name="nome_prod" placeholder="Nome do Produto" required>
-                <div class="grid">
-                    <input type="number" step="0.01" name="qtd_compra" placeholder="Qtd Comprada" required>
-                    <input type="number" step="0.01" name="preco_total" placeholder="Preço Total" required>
-                </div>
-                <button type="submit" class="btn" style="background: #007aff;">Cadastrar/Atualizar</button>
+                <input type="number" step="0.1" name="qtd_compra" placeholder="Qtd Adquirida" required>
+                <input type="number" step="0.01" name="preco_total" placeholder="Preço Total Pago" required>
+                <button type="submit" class="btn btn-blue">Atualizar Estoque</button>
             </form>
-            <hr>
-            {% for p in produtos %}
-                <p style="margin: 5px 0;"><strong>{{loop.index}}º {{p[1]}}:</strong> {{p[2]}} em estoque</p>
-            {% endfor %}
+        </div>
+
+        <div class="card">
+            <h3>⛽ Registro de KM / Saída</h3>
+            <form method="POST">
+                <input type="number" name="km_inicial" placeholder="KM Inicial" required>
+                <input type="number" step="0.01" name="preco_gas" placeholder="Preço Gasolina (R$)" required>
+                <button type="submit" class="btn btn-purple">Registrar Saída</button>
+            </form>
         </div>
     </body>
     </html>
     """
-    return render_template_string(html, lucro=(resumo[0][1] or 0), produtos=produtos)
+    return render_template_string(html, faturamento=faturamento, lucro_real=lucro_real, produtos=produtos)
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=int(os.environ.get("PORT", 5000)))
