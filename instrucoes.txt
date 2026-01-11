@@ -1,0 +1,53 @@
+===========================================================
+      A.U.R.O.R.A - MANUAL DE OPERAÇÕES E COMANDOS
+===========================================================
+
+1. ACESSO RÁPIDO (PELO NAVEGADOR DO IPHONE)
+-----------------------------------------------------------
+* Link do Painel: https://seu-link.onrender.com/painel
+* Funções no Painel: 
+  - Registrar KM Inicial e Preço da Gasolina (Abrir o dia).
+  - Registrar Serviço Manual (Valor cobrado + Cloro usado).
+  - Visualizar últimos 10 serviços e excluir erros.
+
+2. COMANDOS DE VOZ / TEXTO (APP ATALHOS)
+-----------------------------------------------------------
+Para que a A.U.R.O.R.A entenda, use estes formatos:
+
+A. INICIAR O DIA (KM + GASOLINA):
+   Exemplo: "Quilometragem inicial 25600 e gasolina 6.19"
+   (O sistema extrai o KM e o preço do combustível automaticamente).
+
+B. FINALIZAR SERVIÇO (VALOR + CLORO):
+   Exemplo: "Finalizar serviço, valor 150 reais e usei 2 quilos de cloro"
+   (O sistema busca o custo do cloro no estoque e calcula o lucro real).
+
+C. BALANÇO DO DIA:
+   Exemplo: "Aurora, qual o resumo de hoje?"
+   (Ela responde o faturamento total e o lucro líquido acumulado).
+
+3. GESTÃO DE ESTOQUE (DB BROWSER NO PC)
+-----------------------------------------------------------
+* Onde: Tabela 'estoque' no arquivo piscina.db.
+* Importante: Nunca apague a linha "Cloro". 
+* Como abastecer: Sempre que comprar cloro, atualize a coluna 
+  'quantidade_estoque' e 'preco_por_unidade' para que o cálculo 
+  de lucro do servidor permaneça exato.
+
+4. COMANDOS TÉCNICOS (TERMINAL DO VS CODE)
+-----------------------------------------------------------
+Sempre que você alterar o código 'servidor_aurora.py' e quiser 
+enviar para o celular do seu irmão, use esta sequência:
+
+1. git add .
+2. git commit -m "atualização do painel e gasolina"
+3. git push origin main
+
+5. MANUTENÇÃO DO BANCO DE DATAS (OFFLINE)
+-----------------------------------------------------------
+* Se precisar apagar testes: Vá em 'Browse Data' -> Tabela 
+  'historico_financeiro' -> Selecione a linha -> Ícone Lixeira.
+* IMPORTANTE: Sempre clique em "Write Changes" (Escrever Modificações) 
+  antes de fechar o DB Browser ou os dados não serão salvos.
+
+===========================================================
