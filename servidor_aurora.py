@@ -231,6 +231,13 @@ def painel_controle():
                 <button type="submit" class="btn btn-blue">Atualizar Estoque</button>
             </form>
         </div>
+        <div class="card">
+            <h3>⛽ Saída / KM</h3>
+            <form method="POST">
+                <input type="number" name="km_inicial" placeholder="KM Inicial" required><input type="number" step="0.01" name="preco_gas" placeholder="Preço Gasolina" required>
+                <button type="submit" class="btn btn-purple">Registrar</button>
+            </form>
+        </div>
     </body>
     </html>
     """
