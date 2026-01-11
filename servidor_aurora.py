@@ -29,55 +29,69 @@ def comando_voz():
     comando = dados.get('comando', '').lower()
     hoje = time.strftime('%Y-%m-%d')
 
-    # Busca o produto padrão (primeiro do estoque) para operações de voz
-    produto = executar_db("SELECT id, nome_produto, preco_por_unidade FROM estoque LIMIT 1", fetch=True)
+    # Busca todos os produtos para permitir escolher pelo índice
+    estoque = executar_db("SELECT id, nome_produto, preco_por_unidade FROM estoque ORDER BY id", fetch=True)
     
-    # 1. COMANDO: FINALIZAR SERVIÇO (VENDA)
-    # Ex: "Finalizar serviço de 150 reais com 0.5 de produto"
-    if any(p in comando for p in ["finalizar", "concluí", "serviço"]):
+    if not estoque:
+        return jsonify({"resposta": "Nenhum produto cadastrado no estoque."})
+
+    # Lógica de seleção de produto (Padrão: 1º da lista)
+    idx = 0
+    if "segundo" in comando or "número dois" in comando: idx = 1
+    elif "terceiro" in comando or "número três" in comando: idx = 2
+    elif "quarto" in comando or "número quatro" in comando: idx = 3
+    
+    if idx >= len(estoque): idx = 0 # Volta para o primeiro se não existir o escolhido
+    
+    p_id, p_nome, custo_un = estoque[idx]
+
+    # --- COMANDO 1: REGISTRAR O RECEBIMENTO (DINHEIRO) ---
+    # Frase: "Recebi 150 reais"
+    if "recebi" in comando or "valor" in comando:
         nums = re.findall(r"(\d+[\.,]?\d*)", comando.replace(",", "."))
-        if len(nums) >= 2:
+        if nums:
             valor = float(nums[0])
-            qtd_usada = float(nums[1])
-            if produto:
-                p_id, p_nome, custo_un = produto[0]
-                custo_total = qtd_usada * custo_un
-                lucro = valor - custo_total
-                executar_db("INSERT INTO historico_financeiro (cliente_id, data_servico, valor_cobrado, custo_material, lucro_liquido, status_pagamento) VALUES (1, ?, ?, ?, ?, 'Pago')", 
-                            (hoje, valor, custo_total, lucro))
-                executar_db("UPDATE estoque SET quantidade_estoque = quantidade_estoque - ? WHERE id = ?", (qtd_usada, p_id))
-                return jsonify({"resposta": f"Venda de {valor} reais salva com sucesso!"})
-        return jsonify({"resposta": "Diga o valor do serviço e a quantidade de produto usada."})
+            executar_db("INSERT INTO historico_financeiro (cliente_id, data_servico, valor_cobrado, custo_material, lucro_liquido, status_pagamento) VALUES (1, ?, ?, 0, ?, 'Pago')", 
+                        (hoje, valor, valor))
+            return jsonify({"resposta": f"Dinheiro de {valor} reais registrado!"})
 
-    # 2. COMANDO: COMPRAR MATERIAL (ESTOQUE)
-    # Ex: "Comprar 10 de estoque por 120 reais"
-    elif "comprar" in comando or "estoque" in comando:
+    # --- COMANDO 2: USAR PRODUTO (BAIXA DE ESTOQUE) ---
+    # Frase: "Usei 0.5 do primeiro" ou "Usei 0.2 do segundo"
+    elif "usei" in comando or "gastei" in comando or "coloquei" in comando:
+        nums = re.findall(r"(\d+[\.,]?\d*)", comando.replace(",", "."))
+        if nums:
+            qtd = float(nums[0])
+            custo_total = qtd * custo_un
+            # Abate o custo do lucro total
+            executar_db("INSERT INTO historico_financeiro (cliente_id, data_servico, valor_cobrado, custo_material, lucro_liquido, status_pagamento) VALUES (1, ?, 0, ?, ?, 'Uso Material')", 
+                        (hoje, custo_total, -custo_total))
+            # Tira do estoque
+            executar_db("UPDATE estoque SET quantidade_estoque = quantidade_estoque - ? WHERE id = ?", (qtd, p_id))
+            return jsonify({"resposta": f"Baixado {qtd} de {p_nome}."})
+
+    # --- COMANDO 3: COMPRAR PARA ESTOQUE ---
+    # Frase: "Comprar 10 de estoque por 120 reais"
+    elif "comprar" in comando:
         nums = re.findall(r"(\d+[\.,]?\d*)", comando.replace(",", "."))
         if len(nums) >= 2:
-            qtd = float(nums[0])
-            preco_total = float(nums[1])
-            custo_un = preco_total / qtd
-            if produto:
-                p_id, p_nome = produto[0][0], produto[0][1]
-                executar_db("UPDATE estoque SET quantidade_estoque = quantidade_estoque + ?, preco_por_unidade = ? WHERE id = ?", 
-                            (qtd, custo_un, p_id))
-                return jsonify({"resposta": f"Adicionado {qtd} de {p_nome} ao estoque por {preco_total} reais."})
-        return jsonify({"resposta": "Diga a quantidade comprada e o preço total pago."})
+            qtd, preco_total = float(nums[0]), float(nums[1])
+            novo_custo_un = preco_total / qtd
+            executar_db("UPDATE estoque SET quantidade_estoque = quantidade_estoque + ?, preco_por_unidade = ? WHERE id = ?", 
+                        (qtd, novo_custo_un, p_id))
+            return jsonify({"resposta": f"Estoque de {p_nome} atualizado."})
 
-    # 3. COMANDO: REGISTRAR GASTO/FERRAMENTA
-    # Ex: "Gasto de 50 reais com gasolina"
-    elif any(p in comando for p in ["gasto", "despesa", "ferramenta"]):
+    # --- COMANDO 4: GASTOS GERAIS ---
+    # Frase: "Gasto de 50 reais com gasolina"
+    elif "gasto" in comando or "despesa" in comando:
         nums = re.findall(r"(\d+[\.,]?\d*)", comando.replace(",", "."))
-        if len(nums) >= 1:
+        if nums:
             valor_gasto = float(nums[0])
-            desc = "Gasto via Voz"
-            if "com " in comando:
-                desc = comando.split("com ")[-1]
+            desc = comando.split("com ")[-1] if "com " in comando else "Voz"
             executar_db("INSERT INTO historico_financeiro (data_servico, valor_cobrado, custo_material, lucro_liquido, status_pagamento) VALUES (?, 0, ?, ?, ?)", 
                         (hoje, valor_gasto, -valor_gasto, f"Voz: {desc}"))
-            return jsonify({"resposta": f"Gasto de {valor_gasto} reais com {desc} registrado."})
+            return jsonify({"resposta": f"Gasto de {valor_gasto} registrado."})
 
-    return jsonify({"resposta": "Não entendi. Diga: Finalizar serviço, Comprar estoque ou Registrar Gasto."})
+    return jsonify({"resposta": "Aurora não entendeu. Diga: Recebi, Usei ou Comprar."})
 
 # --- PAINEL DE CONTROLE VISUAL ---
 @app.route('/painel', methods=['GET', 'POST'])
@@ -90,39 +104,32 @@ def painel_controle():
                 valor = float(request.form.get('valor_servico').replace(',', '.'))
                 produto_id = request.form.get('produto_id')
                 qtd_usada = float(request.form.get('qtd_usada').replace(',', '.'))
-                prod_data = executar_db("SELECT preco_por_unidade FROM estoque WHERE id = ?", (produto_id,), fetch=True)
+                prod_data =执行db("SELECT preco_por_unidade FROM estoque WHERE id = ?", (produto_id,), fetch=True)
                 custo_un = prod_data[0][0] if prod_data else 0
                 custo_total = qtd_usada * custo_un
-                lucro = valor - custo_total
                 executar_db("INSERT INTO historico_financeiro (cliente_id, data_servico, valor_cobrado, custo_material, lucro_liquido, status_pagamento) VALUES (1, ?, ?, ?, ?, 'Pago')", 
-                            (hoje, valor, custo_total, lucro))
+                            (hoje, valor, custo_total, (valor - custo_total)))
                 executar_db("UPDATE estoque SET quantidade_estoque = quantidade_estoque - ? WHERE id = ?", (qtd_usada, produto_id))
             
             elif 'valor_ferramenta' in request.form:
                 desc = request.form.get('desc_ferramenta')
                 valor_f = float(request.form.get('valor_ferramenta').replace(',', '.'))
                 executar_db("INSERT INTO historico_financeiro (data_servico, valor_cobrado, custo_material, lucro_liquido, status_pagamento) VALUES (?, 0, ?, ?, ?)", 
-                            (hoje, valor_f, -valor_f, f"Ferramenta: {desc}"))
+                            (hoje, valor_f, -valor_f, f"Gasto: {desc}"))
 
             elif 'nome_prod' in request.form:
                 nome = request.form.get('nome_prod').title()
                 qtd = float(request.form.get('qtd_compra').replace(',', '.'))
                 preco = float(request.form.get('preco_total').replace(',', '.'))
-                custo_un = preco / qtd
                 executar_db("INSERT INTO estoque (nome_produto, quantidade_estoque, preco_por_unidade) VALUES (?, ?, ?) ON CONFLICT(nome_produto) DO UPDATE SET quantidade_estoque = quantidade_estoque + ?, preco_por_unidade = ?", 
-                            (nome, qtd, custo_un, qtd, custo_un))
-
-            elif 'km_inicial' in request.form:
-                km = float(request.form.get('km_inicial'))
-                p_gas = float(request.form.get('preco_gas').replace(',', '.'))
-                executar_db("INSERT INTO registro_km (data_registro, km_inicial, preco_gasolina) VALUES (?, ?, ?)", (hoje, km, p_gas))
+                            (nome, qtd, (preco/qtd), qtd, (preco/qtd)))
 
             return redirect(url_for('painel_controle'))
         except Exception as e:
-            return f"Erro ao processar: {e}"
+            return f"Erro: {e}"
 
     resumo = executar_db("SELECT SUM(valor_cobrado), SUM(lucro_liquido) FROM historico_financeiro", fetch=True)
-    produtos = executar_db("SELECT id, nome_produto, quantidade_estoque FROM estoque", fetch=True)
+    produtos = executar_db("SELECT id, nome_produto, quantidade_estoque FROM estoque ORDER BY id", fetch=True)
     faturamento = resumo[0][0] if resumo[0][0] else 0
     lucro_real = resumo[0][1] if resumo[0][1] else 0
 
@@ -139,46 +146,38 @@ def painel_controle():
             .card { background: white; padding: 20px; border-radius: 20px; margin: 15px; box-shadow: 0 4px 12px rgba(0,0,0,0.08); }
             input, select { width: 100%; padding: 14px; margin: 8px 0; border: 1px solid #ddd; border-radius: 12px; font-size: 16px; box-sizing: border-box; }
             .btn { width: 100%; padding: 16px; border: none; border-radius: 12px; font-weight: bold; font-size: 16px; color: white; cursor: pointer; }
-            .btn-green { background: #34c759; } .btn-blue { background: #007aff; } .btn-red { background: #ff3b30; } .btn-purple { background: #5856d6; }
-            h3 { margin-top: 0; color: #1c1c1e; font-size: 18px; }
+            .btn-green { background: #34c759; } .btn-blue { background: #007aff; } .btn-red { background: #ff3b30; }
         </style>
     </head>
     <body>
         <div class="header">
-            <small>LUCRO LÍQUIDO DISPONÍVEL</small>
+            <small>LUCRO LÍQUIDO ACUMULADO</small>
             <h1 style="font-size: 42px; margin: 10px 0;">R$ {{ "%.2f"|format(lucro_real) }}</h1>
             <p>Faturamento: R$ {{ "%.2f"|format(faturamento) }}</p>
         </div>
         <div class="card">
-            <h3>🚀 Registrar Serviço</h3>
+            <h3>🚀 Registrar Serviço Manual</h3>
             <form method="POST">
-                <input type="number" step="0.01" name="valor_servico" placeholder="Valor Cobrado (R$)" required>
+                <input type="number" step="0.01" name="valor_servico" placeholder="Valor Recebido (R$)" required>
                 <select name="produto_id" required>
-                    <option value="" disabled selected>Produto Usado</option>
+                    <option value="" disabled selected>Escolher Produto</option>
                     {% for p in produtos %}
-                    <option value="{{p[0]}}">{{p[1]}} (Disp: {{p[2]}})</option>
+                    <option value="{{p[0]}}">{{loop.index}}º - {{p[1]}} (Qtd: {{p[2]}})</option>
                     {% endfor %}
                 </select>
-                <input type="number" step="0.01" name="qtd_usada" placeholder="Quantidade (L ou kg)" required>
-                <button type="submit" class="btn btn-green">Salvar Serviço</button>
+                <input type="number" step="0.01" name="qtd_usada" placeholder="Quantidade usada" required>
+                <button type="submit" class="btn btn-green">Salvar no Sistema</button>
             </form>
         </div>
         <div class="card">
-            <h3>🛠️ Gastos / Ferramentas</h3>
-            <form method="POST">
-                <input type="text" name="desc_ferramenta" placeholder="Ex: Gasolina, Peneira, Filtro" required>
-                <input type="number" step="0.01" name="valor_ferramenta" placeholder="Valor do Gasto (R$)" required>
-                <button type="submit" class="btn btn-red">Lançar Despesa</button>
-            </form>
-        </div>
-        <div class="card">
-            <h3>📦 Estoque e Compras</h3>
-            <form method="POST">
-                <input type="text" name="nome_prod" placeholder="Nome do Produto" required>
-                <input type="number" step="0.01" name="qtd_compra" placeholder="Qtd Comprada" required>
-                <input type="number" step="0.01" name="preco_total" placeholder="Preço Pago Total" required>
-                <button type="submit" class="btn btn-blue">Atualizar Estoque</button>
-            </form>
+            <h3>📦 Estoque Atual</h3>
+            <ul style="list-style: none; padding: 0;">
+                {% for p in produtos %}
+                <li style="padding: 10px 0; border-bottom: 1px solid #eee;">
+                    <strong>{{loop.index}}º {{p[1]}}:</strong> {{p[2]}} em estoque
+                </li>
+                {% endfor %}
+            </ul>
         </div>
     </body>
     </html>
