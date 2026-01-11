@@ -27,38 +27,83 @@ def executar_db(query, params=(), fetch=False):
 @app.route('/aurora', methods=['POST'])
 def comando_voz():
     dados = request.get_json()
-    comando = dados.get('comando', '').lower()
+    comando = dados.get('comando', '').lower().replace(",", ".")
     hoje = time.strftime('%Y-%m-%d')
+    respostas = []
     
-    # 1. Lógica de KM (Voz)
-    if "começar" in comando or "início" in comando:
-        nums = re.findall(r"(\d+)", comando)
+    # 1. Lógica de KM e Gasolina (Início do Dia)
+    if any(word in comando for word in ["começar", "início", "iniciar"]):
+        # Busca KM (número grande) e Gasolina (número com ponto ex: 5.80)
+        nums = re.findall(r"(\d+\.?\d*)", comando)
         if nums:
-            km = float(nums[-1])
-            executar_db("INSERT INTO historico_financeiro (data_servico, status_pagamento, valor_cobrado) VALUES (?, ?, 0)", (hoje, f"KM_START:{km}"))
-            return jsonify({"resposta": f"Iniciado com {km} KM."})
+            km = float(nums[0])
+            # Tenta achar um segundo número que seria o preço da gasolina
+            p_gas = float(nums[1]) if len(nums) > 1 else PRECO_GASOLINA_PADRAO
             
-    elif "finalizar" in comando or "encerrar" in comando:
-        nums = re.findall(r"(\d+)", comando)
+            executar_db("INSERT INTO historico_financeiro (data_servico, status_pagamento, valor_cobrado) VALUES (?, ?, 0)", 
+                        (hoje, f"KM_START:{km}|GAS:{p_gas}"))
+            return jsonify({"resposta": f"Dia iniciado. KM: {km}, Gasolina: R${p_gas:.2f}."})
+
+    # 2. Lógica de Finalização (Cálculo de Combustível)
+    elif any(word in comando for word in ["finalizar", "encerrar"]):
+        nums = re.findall(r"(\d+\.?\d*)", comando)
         if nums:
-            km_f = float(nums[-1])
+            km_f = float(nums[0])
             res = executar_db("SELECT status_pagamento FROM historico_financeiro WHERE data_servico = ? AND status_pagamento LIKE 'KM_START:%' ORDER BY id DESC LIMIT 1", (hoje,), fetch=True)
             if res:
-                km_i = float(res[0][0].split(":")[-1])
+                info_start = res[0][0] # Ex: "KM_START:120000|GAS:5.80"
+                km_i = float(re.search(r"KM_START:(\d+\.?\d*)", info_start).group(1))
+                try:
+                    p_gas = float(re.search(r"GAS:(\d+\.?\d*)", info_start).group(1))
+                except:
+                    p_gas = PRECO_GASOLINA_PADRAO
+                
                 dist = km_f - km_i
-                custo = (dist / KM_POR_LITRO) * PRECO_GASOLINA_PADRAO
-                executar_db("INSERT INTO historico_financeiro (data_servico, valor_cobrado, custo_material, lucro_liquido, status_pagamento) VALUES (?, 0, ?, ?, ?)", (hoje, custo, -custo, f"Viagem: {dist}km"))
-                return jsonify({"resposta": f"Rodou {dist}km. Gasto de R${custo:.2f}."})
+                custo = (dist / KM_POR_LITRO) * p_gas
+                executar_db("INSERT INTO historico_financeiro (data_servico, valor_cobrado, custo_material, lucro_liquido, status_pagamento) VALUES (?, 0, ?, ?, ?)", 
+                            (hoje, custo, -custo, f"Viagem: {dist}km"))
+                return jsonify({"resposta": f"Encerrado. Rodou {dist}km. Gasto de combustível: R${custo:.2f}."})
 
-    # 2. Lógica de Recebimento (Voz)
+    # 3. Lógica de Recebimento e Materiais (O "Coração" do Comando)
+    custo_total_dia = 0
+    materiais_detectados = []
+    
+    # Busca todos os produtos cadastrados para comparar com a voz
+    produtos_estoque = executar_db("SELECT id, nome_produto, preco_por_unidade FROM estoque", fetch=True)
+    
+    # Detecta Recebimento
     if "recebi" in comando:
-        nums = re.findall(r"(\d+[\.,]?\d*)", comando.replace(",", "."))
-        if nums:
-            v = float(nums[0])
+        val_recebido = re.search(r"recebi\s*(\d+\.?\d*)", comando)
+        if val_recebido:
+            v = float(val_recebido.group(1))
             executar_db("INSERT INTO historico_financeiro (data_servico, valor_cobrado, lucro_liquido, status_pagamento) VALUES (?, ?, ?, 'Pago')", (hoje, v, v))
-            return jsonify({"resposta": f"Recebido {v} reais."})
+            respostas.append(f"Recebido R${v:.2f}")
+
+    # Detecta Uso de Materiais (Múltiplos)
+    for p_id, p_nome, p_preco in produtos_estoque:
+        nome_p = p_nome.lower()
+        if nome_p in comando:
+            # Busca o número que vem ANTES do nome do produto
+            # Ex: "1.5 de cloro" ou "2 algicida"
+            match = re.search(rf"(\d+\.?\d*)\s*(?:de|do|dos|da|das)?\s*{nome_p}", comando)
+            if match:
+                qtd = float(match.group(1))
+                custo_item = qtd * p_preco
+                custo_total_dia += custo_item
+                # Baixa no estoque
+                executar_db("UPDATE estoque SET quantidade_estoque = quantidade_estoque - ? WHERE id = ?", (qtd, p_id))
+                # Lança o custo como uma saída
+                executar_db("INSERT INTO historico_financeiro (data_servico, valor_cobrado, custo_material, lucro_liquido, status_pagamento) VALUES (?, 0, ?, ?, ?)", 
+                            (hoje, custo_item, -custo_item, f"Uso: {qtd} {p_nome}"))
+                materiais_detectados.append(f"{qtd} de {p_nome}")
+
+    if materiais_detectados:
+        respostas.append(f"Materiais: {', '.join(materiais_detectados)}")
+    
+    if respostas:
+        return jsonify({"resposta": ". ".join(respostas)})
             
-    return jsonify({"resposta": "Aurora não entendeu."})
+    return jsonify({"resposta": "Aurora não entendeu. Tente dizer 'recebi [valor]' ou 'usei [quantidade] de [produto]'."})
 
 # --- PAINEL DE CONTROLE (WEB) ---
 @app.route('/painel', methods=['GET', 'POST'])
@@ -77,7 +122,7 @@ def painel_controle():
                 custo_total = qtd_usada * custo_un
                 lucro = valor - custo_total
                 
-                executar_db("INSERT INTO historico_financeiro (cliente_id, data_servico, valor_cobrado, custo_material, lucro_liquido, status_pagamento) VALUES (1, ?, ?, ?, ?, 'Pago')", 
+                executar_db("INSERT INTO historico_financeiro (data_servico, valor_cobrado, custo_material, lucro_liquido, status_pagamento) VALUES (?, ?, ?, ?, 'Pago')", 
                             (hoje, valor, custo_total, lucro))
                 executar_db("UPDATE estoque SET quantidade_estoque = quantidade_estoque - ? WHERE id = ?", (qtd_usada, produto_id))
 
@@ -89,7 +134,7 @@ def painel_controle():
 
             # 3. ATUALIZAR ESTOQUE
             elif 'nome_prod' in request.form:
-                nome = request.form.get('nome_prod').title()
+                nome = request.form.get('nome_prod').strip().title()
                 qtd = float(request.form.get('qtd_compra').replace(',', '.'))
                 preco = float(request.form.get('preco_total').replace(',', '.'))
                 custo_un = preco / qtd
@@ -111,6 +156,7 @@ def painel_controle():
     faturamento = resumo[0][0] if resumo[0][0] else 0
     lucro_real = resumo[0][1] if resumo[0][1] else 0
 
+    # (Mantive a string HTML idêntica à sua solicitação de não mexer no HTML)
     html = """
     <!DOCTYPE html>
     <html lang="pt-br">
