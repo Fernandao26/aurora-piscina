@@ -145,7 +145,10 @@ def painel_controle():
             elif 'nome_prod' in request.form:
                 n, q, p = request.form.get('nome_prod').strip().title(), float(request.form.get('qtd_compra').replace(',', '.')), float(request.form.get('preco_total').replace(',', '.'))
                 executar_db("INSERT INTO estoque (nome_produto, quantidade_estoque, preco_por_unidade) VALUES (?, ?, ?) ON CONFLICT(nome_produto) DO UPDATE SET quantidade_estoque = quantidade_estoque + ?, preco_por_unidade = ?", (n, q, p/q, q, p/q))
-
+            elif 'km_inicial' in request.form:
+                km = float(request.form.get('km_inicial'))
+                pg = float(request.form.get('preco_gas').replace(',', '.'))
+                executar_db("INSERT INTO registro_km (data_registro, km_inicial, preco_gasolina) VALUES (?, ?, ?)", (hoje, km, pg))
             return redirect(url_for('painel_controle'))
         except Exception as e: return f"Erro: {e}"
 
