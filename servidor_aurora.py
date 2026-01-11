@@ -25,12 +25,13 @@ def painel_controle():
     
     if request.method == 'POST':
         try:
-            # 1. LANÇAR SERVIÇO (COM SELEÇÃO DE QUALQUER PRODUTO)
+            # 1. LANÇAR SERVIÇO (SELECIONANDO QUALQUER PRODUTO DO ESTOQUE)
             if 'valor_servico' in request.form:
                 valor = float(request.form.get('valor_servico').replace(',', '.'))
                 produto_id = request.form.get('produto_id')
                 qtd_usada = float(request.form.get('qtd_usada').replace(',', '.'))
                 
+                # Busca o custo unitário do produto selecionado no estoque
                 prod_data = executar_db("SELECT preco_por_unidade FROM estoque WHERE id = ?", (produto_id,), fetch=True)
                 custo_un = prod_data[0][0] if prod_data else 0
                 custo_total = qtd_usada * custo_un
@@ -38,26 +39,28 @@ def painel_controle():
                 
                 executar_db("INSERT INTO historico_financeiro (cliente_id, data_servico, valor_cobrado, custo_material, lucro_liquido, status_pagamento) VALUES (1, ?, ?, ?, ?, 'Pago')", 
                             (hoje, valor, custo_total, lucro))
+                # Deduz a quantidade exata do produto usado
                 executar_db("UPDATE estoque SET quantidade_estoque = quantidade_estoque - ? WHERE id = ?", (qtd_usada, produto_id))
             
-            # 2. GASTO COM FERRAMENTAS (ABATE DIRETO DO LUCRO)
+            # 2. GASTO COM FERRAMENTAS (SUBTRAI DO LUCRO TOTAL)
             elif 'valor_ferramenta' in request.form:
                 desc = request.form.get('desc_ferramenta')
                 valor_f = float(request.form.get('valor_ferramenta').replace(',', '.'))
-                # Registra como custo (valor cobrado 0, lucro negativo)
+                # Registra como despesa: valor cobrado 0, custo material é o preço da ferramenta, lucro fica negativo
                 executar_db("INSERT INTO historico_financeiro (data_servico, valor_cobrado, custo_material, lucro_liquido, status_pagamento) VALUES (?, 0, ?, ?, 'Ferramenta')", 
                             (hoje, valor_f, -valor_f))
 
-            # 3. COMPRAR/CADASTRAR MATERIAL (QUALQUER PRODUTO)
+            # 3. COMPRAR/CADASTRAR MATERIAL (FLEXÍVEL PARA QUALQUER NOME)
             elif 'nome_prod' in request.form:
                 nome = request.form.get('nome_prod').title()
                 qtd = float(request.form.get('qtd_compra').replace(',', '.'))
                 preco = float(request.form.get('preco_total').replace(',', '.'))
                 custo_un = preco / qtd
+                # Se o produto já existe, soma a quantidade e atualiza o preço de custo médio
                 executar_db("INSERT INTO estoque (nome_produto, quantidade_estoque, preco_por_unidade) VALUES (?, ?, ?) ON CONFLICT(nome_produto) DO UPDATE SET quantidade_estoque = quantidade_estoque + ?, preco_por_unidade = ?", 
                             (nome, qtd, custo_un, qtd, custo_un))
 
-            # 4. REGISTRO DE KM
+            # 4. REGISTRO DE KM E GASOLINA
             elif 'km_inicial' in request.form:
                 km = float(request.form.get('km_inicial'))
                 p_gas = float(request.form.get('preco_gas').replace(',', '.'))
@@ -67,7 +70,7 @@ def painel_controle():
         except Exception as e:
             return f"Erro: {e}"
 
-    # BUSCA DE DADOS
+    # BUSCA DE DADOS PARA O DASHBOARD
     resumo = executar_db("SELECT SUM(valor_cobrado), SUM(lucro_liquido) FROM historico_financeiro", fetch=True)
     produtos = executar_db("SELECT id, nome_produto, quantidade_estoque FROM estoque", fetch=True)
     faturamento = resumo[0][0] if resumo[0][0] else 0
@@ -79,34 +82,37 @@ def painel_controle():
     <head>
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>A.U.R.O.R.A - Gestão Total</title>
+        <title>A.U.R.O.R.A - Gestão de Piscina</title>
         <style>
             body { font-family: -apple-system, sans-serif; background: #f4f7f9; margin: 0; padding-bottom: 50px; }
-            .header { background: #007aff; color: white; padding: 35px 20px; text-align: center; border-radius: 0 0 30px 30px; }
+            .header { background: #007aff; color: white; padding: 35px 20px; text-align: center; border-radius: 0 0 30px 30px; box-shadow: 0 4px 15px rgba(0,0,0,0.1); }
             .card { background: white; padding: 20px; border-radius: 20px; margin: 15px; box-shadow: 0 4px 12px rgba(0,0,0,0.08); }
             input, select { width: 100%; padding: 14px; margin: 8px 0; border: 1px solid #ddd; border-radius: 12px; font-size: 16px; box-sizing: border-box; }
-            .btn { width: 100%; padding: 16px; border: none; border-radius: 12px; font-weight: bold; font-size: 16px; color: white; cursor: pointer; }
+            .btn { width: 100%; padding: 16px; border: none; border-radius: 12px; font-weight: bold; font-size: 16px; color: white; cursor: pointer; transition: 0.2s; }
+            .btn:active { transform: scale(0.98); opacity: 0.8; }
             .btn-green { background: #34c759; } .btn-blue { background: #007aff; } .btn-red { background: #ff3b30; } .btn-purple { background: #5856d6; }
-            h3 { margin-top: 0; color: #1c1c1e; display: flex; align-items: center; gap: 8px; }
+            h3 { margin-top: 0; color: #1c1c1e; font-size: 18px; }
+            .label-total { text-transform: uppercase; letter-spacing: 1px; font-size: 11px; opacity: 0.9; }
         </style>
     </head>
     <body>
         <div class="header">
-            <small style="text-transform: uppercase; letter-spacing: 1px;">Lucro Real (Limpo)</small>
+            <span class="label-total">Lucro Líquido Real</span>
             <h1 style="font-size: 42px; margin: 10px 0;">R$ {{ "%.2f"|format(lucro_real) }}</h1>
-            <p>Faturamento: R$ {{ "%.2f"|format(faturamento) }}</p>
+            <p style="margin:0; opacity:0.8;">Faturamento Total: R$ {{ "%.2f"|format(faturamento) }}</p>
         </div>
 
         <div class="card">
-            <h3>🚀 Novo Serviço</h3>
+            <h3>🚀 Registrar Serviço</h3>
             <form method="POST">
                 <input type="number" step="0.01" name="valor_servico" placeholder="Valor Cobrado (R$)" required>
-                <select name="produto_id">
+                <select name="produto_id" required>
+                    <option value="" disabled selected>Selecione o Produto Usado</option>
                     {% for p in produtos %}
-                    <option value="{{p[0]}}">{{p[1]}} (Disponível: {{p[2]}})</option>
+                    <option value="{{p[0]}}">{{p[1]}} (Estoque: {{p[2]}})</option>
                     {% endfor %}
                 </select>
-                <input type="number" step="0.1" name="qtd_usada" placeholder="Quantidade Usada" required>
+                <input type="number" step="0.1" name="qtd_usada" placeholder="Quantidade Gasta (kg ou L)" required>
                 <button type="submit" class="btn btn-green">Salvar Trabalho</button>
             </form>
         </div>
@@ -114,28 +120,28 @@ def painel_controle():
         <div class="card">
             <h3>🛠️ Gastos com Ferramentas</h3>
             <form method="POST">
-                <input type="text" name="desc_ferramenta" placeholder="Ex: Peneira, Filtro, Mangueira" required>
-                <input type="number" step="0.01" name="valor_ferramenta" placeholder="Valor Pago (R$)" required>
+                <input type="text" name="desc_ferramenta" placeholder="Descrição (Ex: Peneira, Mangueira)" required>
+                <input type="number" step="0.01" name="valor_ferramenta" placeholder="Valor da Ferramenta (R$)" required>
                 <button type="submit" class="btn btn-red">Registrar Despesa</button>
             </form>
         </div>
 
         <div class="card">
-            <h3>📦 Comprar Material</h3>
+            <h3>📦 Comprar Insumos (Estoque)</h3>
             <form method="POST">
-                <input type="text" name="nome_prod" placeholder="Nome (Ex: Algicida, Cloro, Barrilha)" required>
-                <input type="number" step="0.1" name="qtd_compra" placeholder="Qtd Total (kg ou L)" required>
+                <input type="text" name="nome_prod" placeholder="Nome (Ex: Algicida, Clarificante, Cloro)" required>
+                <input type="number" step="0.1" name="qtd_compra" placeholder="Quantidade Adquirida" required>
                 <input type="number" step="0.01" name="preco_total" placeholder="Preço Total Pago" required>
                 <button type="submit" class="btn btn-blue">Atualizar Estoque</button>
             </form>
         </div>
 
         <div class="card">
-            <h3>⛽ Combustível / KM</h3>
+            <h3>⛽ Iniciar Rota / KM</h3>
             <form method="POST">
-                <input type="number" name="km_inicial" placeholder="KM Inicial" required>
-                <input type="number" step="0.01" name="preco_gas" placeholder="Preço Litro (R$)" required>
-                <button type="submit" class="btn btn-purple">Registrar Rota</button>
+                <input type="number" name="km_inicial" placeholder="KM Inicial do Veículo" required>
+                <input type="number" step="0.01" name="preco_gas" placeholder="Preço do Litro da Gasolina" required>
+                <button type="submit" class="btn btn-purple">Registrar Saída</button>
             </form>
         </div>
     </body>
