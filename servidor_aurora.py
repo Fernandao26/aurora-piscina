@@ -62,7 +62,6 @@ def inicializar_banco():
             preco_por_unidade REAL
         )
     """)
-    # Tabela extra para registro de KM conforme seu último formulário
     executar_db("""
         CREATE TABLE IF NOT EXISTS registro_km (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -80,9 +79,28 @@ def comando_voz():
     dados = request.get_json()
     comando = dados.get('comando', '').lower().replace(",", ".")
     hoje = time.strftime('%Y-%m-%d')
-    respostas = []
     
-    # 1. Iniciar Dia (KM + Agenda)
+    # 1. NOVO PRODUTO (NÃO EXISTENTE NO ESTOQUE)
+    if "cadastrar" in comando or "novo produto" in comando:
+        # Tenta extrair o nome (palavra após 'produto' ou 'cadastrar')
+        # Ex: "cadastrar novo produto cloro quantidade 10 preço 100"
+        nums = re.findall(r"(\d+\.?\d*)", comando)
+        nome_match = re.search(r"(?:produto|cadastrar)\s+([a-zA-Záéíóúãõç]+)", comando)
+        
+        if nome_match and len(nums) >= 2:
+            nome_p = nome_match.group(1).title()
+            qtd = float(nums[0])
+            preco_total = float(nums[1])
+            preco_un = preco_total / qtd
+            
+            try:
+                executar_db("INSERT INTO estoque (nome_produto, quantidade_estoque, preco_por_unidade) VALUES (?, ?, ?)", 
+                            (nome_p, qtd, preco_un))
+                return jsonify({"resposta": f"Produto {nome_p} cadastrado com {qtd} unidades no valor de {preco_total} reais."})
+            except:
+                return jsonify({"resposta": f"Produto {nome_p} já existe. Use o comando de adicionar."})
+
+    # 2. Iniciar Dia (KM + Agenda)
     if any(word in comando for word in ["começar", "início", "iniciar"]):
         nums = re.findall(r"(\d+\.?\d*)", comando)
         if nums:
@@ -100,7 +118,7 @@ def comando_voz():
             msg_agenda = " Clientes de hoje: " + ", ".join([r[0] for r in agenda_hoje]) if agenda_hoje else " Sem agendamentos."
             return jsonify({"resposta": f"Dia iniciado com {km} KM.{msg_agenda}"})
 
-    # 2. Finalizar Dia (Cálculo Combustível)
+    # 3. Finalizar Dia (Cálculo Combustível)
     elif any(word in comando for word in ["finalizar", "encerrar"]):
         nums = re.findall(r"(\d+\.?\d*)", comando)
         if nums:
@@ -118,7 +136,7 @@ def comando_voz():
                             (hoje, custo_comb, -custo_comb, f"Viagem: {dist}km"))
                 return jsonify({"resposta": f"Dia encerrado. Rodou {dist}km. Gasto gasolina: R${custo_comb:.2f}."})
 
-    # 3. Gerenciar Estoque por Voz (Entrada e Saída)
+    # 4. Gerenciar Estoque EXISTENTE (Entrada e Saída)
     produtos_estoque = executar_db("SELECT id, nome_produto, preco_por_unidade FROM estoque", fetch=True)
     for p_id, p_nome, p_preco in produtos_estoque:
         nome_p = p_nome.lower()
@@ -126,19 +144,17 @@ def comando_voz():
             match = re.search(rf"(\d+\.?\d*)\s*(?:de|do|dos|da|das)?\s*{nome_p}", comando)
             if match:
                 qtd = float(match.group(1))
-                # Se falar "adicionar", "entrou" ou "estoque", ele SOMA
                 if any(word in comando for word in ["adicionar", "entrou", "estoque", "comprar"]):
                     executar_db("UPDATE estoque SET quantidade_estoque = quantidade_estoque + ? WHERE id = ?", (qtd, p_id))
                     return jsonify({"resposta": f"Entrada de {qtd} de {p_nome} registrada."})
-                # Se não, ele entende como USO (subtrai)
                 else:
                     custo_item = qtd * p_preco
                     executar_db("UPDATE estoque SET quantidade_estoque = quantidade_estoque - ? WHERE id = ?", (qtd, p_id))
                     executar_db("INSERT INTO historico_financeiro (data_servico, valor_cobrado, custo_material, lucro_liquido, status_pagamento) VALUES (?, 0, ?, ?, ?)", 
                                 (hoje, custo_item, -custo_item, f"Uso: {qtd} {p_nome}"))
-                    return jsonify({"resposta": f"Gasto de {qtd} de {p_nome} abatido do lucro."})
+                    return jsonify({"resposta": f"Gasto de {qtd} de {p_nome} abatido."})
 
-    # 4. Recebimento
+    # 5. Recebimento
     if "recebi" in comando:
         val = re.search(r"recebi\s*(\d+\.?\d*)", comando)
         if val:
@@ -159,10 +175,8 @@ def painel_controle():
             if 'cadastrar_cliente' in request.form:
                 executar_db("INSERT INTO clientes (nome, whatsapp, endereco, valor_mensal) VALUES (?, ?, ?, ?)", 
                             (request.form.get('nome_cliente'), request.form.get('whatsapp'), request.form.get('endereco'), float(request.form.get('valor_mensal').replace(',', '.'))))
-
             elif 'agendar_servico' in request.form:
                 executar_db("INSERT INTO agenda (cliente_id, data_visita, status) VALUES (?, ?, 'Agendado')", (request.form.get('cliente_id'), request.form.get('data_visita')))
-
             elif 'valor_servico' in request.form:
                 valor = float(request.form.get('valor_servico').replace(',', '.'))
                 p_id = request.form.get('produto_id')
@@ -171,26 +185,21 @@ def painel_controle():
                 custo_t = (qtd * prod_data[0][0]) if prod_data else 0
                 executar_db("INSERT INTO historico_financeiro (data_servico, valor_cobrado, custo_material, lucro_liquido, status_pagamento) VALUES (?, ?, ?, ?, 'Pago')", (hoje, valor, custo_t, valor - custo_t))
                 executar_db("UPDATE estoque SET quantidade_estoque = quantidade_estoque - ? WHERE id = ?", (qtd, p_id))
-
             elif 'nome_prod' in request.form:
                 n, q, p = request.form.get('nome_prod').strip().title(), float(request.form.get('qtd_compra').replace(',', '.')), float(request.form.get('preco_total').replace(',', '.'))
                 executar_db("INSERT INTO estoque (nome_produto, quantidade_estoque, preco_por_unidade) VALUES (?, ?, ?) ON CONFLICT(nome_produto) DO UPDATE SET quantidade_estoque = quantidade_estoque + ?, preco_por_unidade = ?", (n, q, p/q, q, p/q))
-
             elif 'km_inicial' in request.form:
                 km = float(request.form.get('km_inicial'))
                 pg = float(request.form.get('preco_gas').replace(',', '.'))
                 executar_db("INSERT INTO registro_km (data_registro, km_inicial, preco_gasolina) VALUES (?, ?, ?)", (hoje, km, pg))
-
             return redirect(url_for('painel_controle'))
         except Exception as e: return f"Erro: {e}"
 
-    # Dados para carregar a página
     resumo = executar_db("SELECT SUM(valor_cobrado), SUM(lucro_liquido) FROM historico_financeiro", fetch=True)
     resumo_mes = executar_db("SELECT SUM(valor_cobrado), SUM(lucro_liquido) FROM historico_financeiro WHERE data_servico LIKE ?", (f"{mes_atual}%",), fetch=True)
     produtos = executar_db("SELECT id, nome_produto, quantidade_estoque FROM estoque", fetch=True)
     lista_c = executar_db("SELECT id, nome FROM clientes", fetch=True)
     
-    # Preparar link do WhatsApp para o irmão
     fat_mes = resumo_mes[0][0] or 0
     lucro_mes = resumo_mes[0][1] or 0
     msg_whats = f"Relatório Aurora - Mês {mes_atual}:%0AFaturamento: R${fat_mes:.2f}%0ALucro Líquido: R${lucro_mes:.2f}"
@@ -216,7 +225,7 @@ def painel_controle():
         <div class="header">
             <small>LUCRO LÍQUIDO ACUMULADO</small>
             <h1 style="font-size: 38px; margin: 5px 0;">R$ {{ "%.2f"|format(resumo[0][1] or 0) }}</h1>
-            <a href="{{ link_whats }}" target="_blank" class="btn btn-green" style="width: auto; display: inline-block; padding: 10px 20px;">📲 Relatório para WhatsApp</a>
+            <a href="{{ link_whats }}" target="_blank" class="btn btn-green" style="width: auto; display: inline-block; padding: 10px 20px;">📲 Relatório WhatsApp</a>
         </div>
 
         <div class="card">
@@ -227,7 +236,7 @@ def painel_controle():
                 <input type="text" name="whatsapp" placeholder="WhatsApp">
                 <input type="text" name="endereco" placeholder="Endereço">
                 <input type="number" step="0.01" name="valor_mensal" placeholder="Valor Mensal (R$)" required>
-                <button type="submit" class="btn btn-orange">Cadastrar no Banco</button>
+                <button type="submit" class="btn btn-orange">Cadastrar Cliente</button>
             </form>
         </div>
 
@@ -258,7 +267,7 @@ def painel_controle():
         </div>
 
         <div class="card">
-            <h3>📦 Comprar Material (Estoque)</h3>
+            <h3>📦 Comprar/Atualizar Material</h3>
             <form method="POST">
                 <input type="text" name="nome_prod" placeholder="Nome do Produto" required>
                 <input type="number" step="0.1" name="qtd_compra" placeholder="Qtd Comprada" required>
